@@ -1,0 +1,682 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
+  <meta name="apple-mobile-web-app-title" content="有給管理"/>
+  <title>有給管理システム</title>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet"/>
+  <script src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+</head>
+<body style="margin:0;padding:0;">
+  <div id="root"></div>
+  <script>
+const { useState, useMemo, useRef, useEffect } = React;
+const HOLIDAYS = /* @__PURE__ */ new Set([
+  "2024-1-1",
+  "2024-1-8",
+  "2024-2-11",
+  "2024-2-12",
+  "2024-2-23",
+  "2024-3-20",
+  "2024-4-29",
+  "2024-5-3",
+  "2024-5-4",
+  "2024-5-5",
+  "2024-5-6",
+  "2024-7-15",
+  "2024-8-11",
+  "2024-8-12",
+  "2024-9-16",
+  "2024-9-22",
+  "2024-9-23",
+  "2024-10-14",
+  "2024-11-3",
+  "2024-11-4",
+  "2024-11-23",
+  "2025-1-1",
+  "2025-1-2",
+  "2025-1-3",
+  "2025-1-13",
+  "2025-2-11",
+  "2025-2-23",
+  "2025-2-24",
+  "2025-3-20",
+  "2025-4-29",
+  "2025-5-3",
+  "2025-5-4",
+  "2025-5-5",
+  "2025-5-6",
+  "2025-7-21",
+  "2025-8-11",
+  "2025-9-15",
+  "2025-9-23",
+  "2025-10-13",
+  "2025-11-3",
+  "2025-11-23",
+  "2025-11-24",
+  "2026-1-1",
+  "2026-1-2",
+  "2026-1-3",
+  "2026-1-12",
+  "2026-2-11",
+  "2026-2-23",
+  "2026-3-20",
+  "2026-4-29",
+  "2026-5-3",
+  "2026-5-4",
+  "2026-5-5",
+  "2026-5-6",
+  "2026-7-20",
+  "2026-8-11",
+  "2026-9-21",
+  "2026-9-22",
+  "2026-9-23",
+  "2026-10-12",
+  "2026-11-3",
+  "2026-11-23"
+]);
+function isHoliday(y, m, d) {
+  return HOLIDAYS.has(`${y}-${m}-${d}`);
+}
+function isNewYear(y, m, d) {
+  return m === 1 && d >= 1 && d <= 3;
+}
+function getDow(y, m, d) {
+  return new Date(y, m - 1, d).getDay();
+}
+function isClosedDay(y, m, d) {
+  const dow = getDow(y, m, d);
+  return dow === 3 || dow === 0 || isHoliday(y, m, d) || isNewYear(y, m, d);
+}
+const LEAVE_TYPES = [
+  { code: "\u6709", label: "\u6709\u7D66", color: "#16a34a", bg: "#dcfce7", border: "#4ade80", days: 1 },
+  { code: "\u534A", label: "\u534A\u65E5\u6709\u7D66", color: "#0d9488", bg: "#ccfbf1", border: "#5eead4", days: 0.5 },
+  { code: "\u8A08", label: "\u8A08\u753B\u6709\u7D66", color: "#2563eb", bg: "#dbeafe", border: "#60a5fa", days: 1 },
+  { code: "\u6B20", label: "\u6B20\u52E4", color: "#dc2626", bg: "#fee2e2", border: "#f87171", days: 0 },
+  { code: "\u5FCC", label: "\u5FCC\u5F15", color: "#7c3aed", bg: "#ede9fe", border: "#a78bfa", days: 0 }
+];
+const GRANT_TABLE = [
+  { months: 6, days: 10 },
+  { months: 18, days: 11 },
+  { months: 30, days: 12 },
+  { months: 42, days: 14 },
+  { months: 54, days: 16 },
+  { months: 66, days: 18 },
+  { months: 78, days: 20 }
+  // 78ヶ月以降は毎年20日
+];
+function addMonths(date, n) {
+  const d = new Date(date);
+  d.setMonth(d.getMonth() + n);
+  return d;
+}
+function calcBatches(joinDateStr, asOf = /* @__PURE__ */ new Date()) {
+  const join = new Date(joinDateStr);
+  const batches = [];
+  for (let i = 0; i < GRANT_TABLE.length; i++) {
+    const g = GRANT_TABLE[i];
+    const grantedAt = addMonths(join, g.months);
+    if (grantedAt > asOf) break;
+    const expiresAt = addMonths(grantedAt, 24);
+    batches.push({ grantedAt, days: g.days, expiresAt });
+  }
+  const last = GRANT_TABLE[GRANT_TABLE.length - 1];
+  let nextMonths = last.months + 12;
+  while (true) {
+    const grantedAt = addMonths(join, nextMonths);
+    if (grantedAt > asOf) break;
+    const expiresAt = addMonths(grantedAt, 24);
+    batches.push({ grantedAt, days: 20, expiresAt });
+    nextMonths += 12;
+    if (nextMonths > 600) break;
+  }
+  return batches;
+}
+function calcValidDays(joinDateStr, asOf = /* @__PURE__ */ new Date()) {
+  const batches = calcBatches(joinDateStr, asOf);
+  return batches.filter((b) => b.expiresAt > asOf).reduce((s, b) => s + b.days, 0);
+}
+function calcNextEvents(joinDateStr, asOf = /* @__PURE__ */ new Date()) {
+  const join = new Date(joinDateStr);
+  let nextGrant = null, nextExpiry = null;
+  for (let i = 0; i < GRANT_TABLE.length; i++) {
+    const g = GRANT_TABLE[i];
+    const grantedAt = addMonths(join, g.months);
+    if (grantedAt > asOf) {
+      nextGrant = { date: grantedAt, days: g.days };
+      break;
+    }
+  }
+  if (!nextGrant) {
+    const last = GRANT_TABLE[GRANT_TABLE.length - 1];
+    let nm = last.months + 12;
+    while (true) {
+      const grantedAt = addMonths(join, nm);
+      if (grantedAt > asOf) {
+        nextGrant = { date: grantedAt, days: 20 };
+        break;
+      }
+      nm += 12;
+      if (nm > 600) break;
+    }
+  }
+  const batches = calcBatches(joinDateStr, asOf).filter((b) => b.expiresAt > asOf);
+  if (batches.length > 0) {
+    batches.sort((a, b) => a.expiresAt - b.expiresAt);
+    nextExpiry = { date: batches[0].expiresAt, days: batches[0].days };
+  }
+  return { nextGrant, nextExpiry };
+}
+function fmtDate(date) {
+  return `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()}`;
+}
+const RAW = [
+  { name: "\u5B88\u8C37 \u7F8E\u5357", join: "2013-08-22" },
+  { name: "\u5C0F\u718A \u512A\u4F73", join: "2017-07-10" },
+  { name: "\u5E73\u7530 \u5F69", join: "2017-09-16" },
+  { name: "\u5DE5\u85E4 \u6176\u592A", join: "2018-08-16" },
+  { name: "\u4E95\u5CF6 \u5343\u5C0B", join: "2018-09-01" },
+  { name: "\u52A0\u85E4 \u672A\u7FBD", join: "2019-10-16" },
+  { name: "\u4E2D\u7530 \u548C\u83DC", join: "2021-06-28" },
+  { name: "\u6E21\u908A \u7F8E\u745B", join: "2021-08-02" },
+  { name: "\u9AD8\u6A4B \u76F4\u6A39", join: "2021-10-01" },
+  { name: "\u5927\u6A4B \u7F8E\u685C", join: "2022-04-01" },
+  { name: "\u70BA\u8C37 \u672A\u7D50", join: "2023-03-16" },
+  { name: "\u5927\u5DDD \u6D0B", join: "2023-03-16" },
+  { name: "\u963F\u90E8 \u88D5\u7F8E", join: "2023-05-08" },
+  { name: "\u5C0F\u5BAE \u6D3B\u884C", join: "2023-08-16" },
+  { name: "\u6DFB\u7530 \u7DBE", join: "2023-12-01" },
+  { name: "\u5E73\u5C3E \u67CA\u4EBA", join: "2024-01-16" },
+  { name: "\u5C71\u53E3 \u82E5\u83DC", join: "2024-03-01" },
+  { name: "\u4E2D\u6751 \u5C0F\u590F", join: "2024-03-18" },
+  { name: "\u4E45\u4FDD \u91CC\u7F8E", join: "2024-04-16" },
+  { name: "\u677E\u6C38 \u611B\u7406", join: "2024-09-02" },
+  { name: "\u52A0\u85E4 \u831C", join: "2024-10-01" },
+  { name: "\u6E21\u908A \u5FEB", join: "2025-04-16" },
+  { name: "\u7F8E\u884C \u82B1\u83DC", join: "2025-05-01" },
+  { name: "\u9B3C\u675F \u96C5\u54C9", join: "2025-06-30" },
+  { name: "\u91CE\u6751 \u512A\u8863", join: "2026-01-09" },
+  { name: "\u5927\u5EAD \u82F1\u96C4", join: "2026-01-05" },
+  { name: "\u7530\u4E2D \u79C0\u660E", join: "2026-02-01" },
+  { name: "\u5B89\u7530 \u68A8\u745A", join: "2026-03-02" },
+  { name: "\u4E45\u4FDD\u5F62 \u7950\u7F8E", join: "2026-04-06" },
+  { name: "\u4F50\u85E4 \u6843\u9999", join: "2026-04-16" },
+  { name: "\u4F0A\u85E4 \u73B2", join: "2026-04-16" }
+];
+const TODAY = /* @__PURE__ */ new Date();
+const INITIAL_EMPLOYEES = RAW.map((e, i) => ({
+  id: i + 1,
+  name: e.name,
+  joinDate: e.join,
+  onLeave: false,
+  leaveStart: "",
+  leaveEnd: "",
+  adjustDays: 0
+}));
+function getPeriodKey(y, m) {
+  return `${y}-${String(m).padStart(2, "0")}`;
+}
+const TY = TODAY.getFullYear(), TM = TODAY.getMonth() + 1;
+const DEFAULT_KEY = getPeriodKey(TY, TM);
+const DOW = ["\u65E5", "\u6708", "\u706B", "\u6C34", "\u6728", "\u91D1", "\u571F"];
+function shiftMonth(y, m, delta) {
+  let nm = m + delta, ny = y;
+  while (nm > 12) {
+    nm -= 12;
+    ny++;
+  }
+  while (nm < 1) {
+    nm += 12;
+    ny--;
+  }
+  return { year: ny, month: nm, key: getPeriodKey(ny, nm) };
+}
+function buildInitialPeriods() {
+  const list = [];
+  for (let i = -6; i <= 6; i++) {
+    const p = shiftMonth(TY, TM, i);
+    list.push(p);
+  }
+  return list;
+}
+const STORAGE_KEY = "yukyuu_mgr_v1";
+function loadStorage() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (e) {
+    return null;
+  }
+}
+function saveStorage(data) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  } catch (e) {
+  }
+}
+function App() {
+  const saved = loadStorage();
+  const [employees, setEmployees] = useState(() => saved?.employees ?? INITIAL_EMPLOYEES);
+  const [records, setRecords] = useState(() => saved?.records ?? {});
+  const [periodKey, setPeriodKey] = useState(() => saved?.periodKey ?? DEFAULT_KEY);
+  const [periods, setPeriods] = useState(() => saved?.periods ?? buildInitialPeriods());
+  const [detail, setDetail] = useState(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const [newEmp, setNewEmp] = useState({ name: "", joinDate: "" });
+  const [saved2, setSaved2] = useState(false);
+  const [confirmDialog, setConfirmDialog] = useState(null);
+  const tabBarRef = useRef(null);
+  const saveTimer = useRef(null);
+  useEffect(() => {
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      saveStorage({ employees, records, periodKey, periods });
+      setSaved2(true);
+      setTimeout(() => setSaved2(false), 1500);
+    }, 300);
+    return () => clearTimeout(saveTimer.current);
+  }, [employees, records, periodKey, periods]);
+  const period = periods.find((p) => p.key === periodKey) || periods[Math.floor(periods.length / 2)];
+  function addPrevMonth() {
+    const first = periods[0];
+    const prev = shiftMonth(first.year, first.month, -1);
+    setPeriods((p) => [prev, ...p]);
+    setPeriodKey(prev.key);
+  }
+  function addNextMonth() {
+    const last = periods[periods.length - 1];
+    const next = shiftMonth(last.year, last.month, 1);
+    setPeriods((p) => [...p, next]);
+    setPeriodKey(next.key);
+  }
+  function removeTab(key) {
+    if (periods.length <= 1) return;
+    const idx = periods.findIndex((p) => p.key === key);
+    const newP = periods.filter((p) => p.key !== key);
+    setPeriods(newP);
+    if (periodKey === key) setPeriodKey(newP[Math.min(idx, newP.length - 1)].key);
+  }
+  useEffect(() => {
+    const el = tabBarRef.current?.querySelector(`[data-key="${periodKey}"]`);
+    if (el) el.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
+  }, [periodKey]);
+  const days = useMemo(() => {
+    const list = [];
+    const { year: y, month: m } = period;
+    const dim = new Date(y, m, 0).getDate();
+    for (let d = 16; d <= dim; d++) list.push({ day: d, month: m, year: y });
+    const ny = m === 12 ? y + 1 : y, nm = m === 12 ? 1 : m + 1;
+    for (let d = 1; d <= 15; d++) list.push({ day: d, month: nm, year: ny });
+    return list;
+  }, [period]);
+  function rk(eid, d) {
+    return `${periodKey}-${eid}-${d.year}-${d.month}-${d.day}`;
+  }
+  function toggleCell(eid, d) {
+    if (isClosedDay(d.year, d.month, d.day)) return;
+    const k = rk(eid, d), cur = records[k];
+    const idx = LEAVE_TYPES.findIndex((t) => t.code === cur);
+    const ni = (idx + 1) % (LEAVE_TYPES.length + 1);
+    setRecords((prev) => {
+      const c = { ...prev };
+      if (ni === LEAVE_TYPES.length) delete c[k];
+      else c[k] = LEAVE_TYPES[ni].code;
+      return c;
+    });
+  }
+  function totalUsed(eid) {
+    return Object.entries(records).filter(([k]) => k.includes(`-${eid}-`)).reduce((s, [, v]) => {
+      const t = LEAVE_TYPES.find((x) => x.code === v);
+      return s + (t ? t.days : 0);
+    }, 0);
+  }
+  function remain(emp) {
+    const valid = calcValidDays(emp.joinDate, TODAY);
+    return Math.max(0, valid + (emp.adjustDays || 0) - totalUsed(emp.id));
+  }
+  function countCode(eid, code) {
+    return Object.entries(records).filter(([k, v]) => v === code && k.includes(`-${eid}-`)).length;
+  }
+  function addEmployee() {
+    if (!newEmp.name.trim() || !newEmp.joinDate) return;
+    const id = Math.max(0, ...employees.map((e) => e.id)) + 1;
+    setEmployees((p) => [...p, { id, name: newEmp.name, joinDate: newEmp.joinDate, onLeave: false, leaveStart: "", leaveEnd: "", adjustDays: 0 }]);
+    setNewEmp({ name: "", joinDate: "" });
+    setAddOpen(false);
+  }
+  function deleteEmployee(id) {
+    setEmployees((p) => p.filter((e) => e.id !== id));
+    setRecords((prev) => {
+      const c = { ...prev };
+      Object.keys(c).forEach((k) => {
+        if (k.includes(`-${id}-`)) delete c[k];
+      });
+      return c;
+    });
+    setDetail(null);
+  }
+  function setOnLeave(id, val, leaveStart, leaveEnd) {
+    setEmployees((p) => p.map((e) => e.id === id ? { ...e, onLeave: val, leaveStart: leaveStart || "", leaveEnd: leaveEnd || "" } : e));
+  }
+  const detailEmp = employees.find((e) => e.id === detail);
+  function tabLabel(p) {
+    return `${p.month}\u6708`;
+  }
+  function tabSub(p) {
+    return p.year !== TY ? `${p.year}` : "";
+  }
+  return /* @__PURE__ */ React.createElement("div", { style: { minHeight: "100vh", background: "#f1f5f9", fontFamily: "'Noto Sans JP',sans-serif", color: "#1e293b" } }, /* @__PURE__ */ React.createElement("link", { href: "https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap", rel: "stylesheet" }), /* @__PURE__ */ React.createElement("header", { style: { background: "#fff", borderBottom: "1px solid #e2e8f0", padding: "10px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, zIndex: 50, boxShadow: "0 1px 3px #0001" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, fontSize: 16, color: "#0f172a" } }, "\u{1F4CB} \u6709\u7D66\u7BA1\u7406\u30B7\u30B9\u30C6\u30E0"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 10, color: saved2 ? "#16a34a" : "#cbd5e1", transition: "color 0.4s", fontWeight: saved2 ? 600 : 400 } }, saved2 ? "\u2713 \u4FDD\u5B58\u3057\u307E\u3057\u305F" : "\u81EA\u52D5\u4FDD\u5B58")), /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      onClick: () => setAddOpen(true),
+      style: { background: "#2563eb", border: "none", color: "#fff", padding: "7px 16px", borderRadius: 7, cursor: "pointer", fontSize: 12, fontWeight: 700, boxShadow: "0 2px 6px #2563eb33" }
+    },
+    "\uFF0B \u793E\u54E1\u8FFD\u52A0"
+  )), /* @__PURE__ */ React.createElement("div", { style: { background: "#e8edf3", borderBottom: "2px solid #cbd5e1", position: "sticky", top: 49, zIndex: 40, display: "flex", alignItems: "flex-end" } }, /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      onClick: addPrevMonth,
+      title: "\u524D\u6708\u3092\u8FFD\u52A0",
+      style: {
+        flexShrink: 0,
+        height: 36,
+        padding: "0 10px",
+        background: "#d1d9e6",
+        border: "1px solid #c5cdd8",
+        borderBottom: "2px solid #cbd5e1",
+        borderRight: "none",
+        cursor: "pointer",
+        fontSize: 11,
+        color: "#64748b",
+        fontFamily: "inherit",
+        whiteSpace: "nowrap",
+        borderRadius: "6px 0 0 0",
+        display: "flex",
+        alignItems: "center",
+        gap: 4,
+        alignSelf: "flex-end",
+        marginBottom: 0
+      }
+    },
+    "\uFF0B\u2190"
+  ), /* @__PURE__ */ React.createElement("div", { ref: tabBarRef, style: { display: "flex", overflowX: "auto", scrollbarWidth: "none", flex: 1, padding: "6px 4px 0", gap: 2, alignItems: "flex-end" } }, periods.map((p) => {
+    const active = p.key === periodKey;
+    const isNow = p.key === DEFAULT_KEY;
+    return /* @__PURE__ */ React.createElement("div", { key: p.key, "data-key": p.key, style: { position: "relative", flexShrink: 0, display: "flex", alignItems: "flex-end" } }, /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: () => setPeriodKey(p.key),
+        style: {
+          padding: active ? "7px 20px 9px" : "6px 16px 7px",
+          background: active ? "#fff" : "#dce3ec",
+          border: "1px solid",
+          borderColor: active ? "#cbd5e1 #cbd5e1 #fff" : "#c5cdd8",
+          borderBottom: active ? "2px solid #fff" : "1px solid #c5cdd8",
+          borderRadius: "6px 6px 0 0",
+          cursor: "pointer",
+          fontSize: active ? 13 : 11,
+          fontWeight: active ? 700 : 400,
+          color: active ? "#1e293b" : isNow ? "#2563eb" : "#64748b",
+          fontFamily: "inherit",
+          marginBottom: active ? -2 : 0,
+          whiteSpace: "nowrap",
+          outline: "none",
+          lineHeight: 1.2,
+          paddingRight: active ? 28 : 20
+        }
+      },
+      tabSub(p) && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 9, color: "#94a3b8", lineHeight: 1 } }, tabSub(p)),
+      tabLabel(p),
+      isNow && /* @__PURE__ */ React.createElement("span", { style: { display: "block", width: 4, height: 4, background: "#2563eb", borderRadius: "50%", margin: "2px auto 0" } })
+    ), active && !isNow && /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: (e) => {
+          e.stopPropagation();
+          removeTab(p.key);
+        },
+        style: {
+          position: "absolute",
+          top: 4,
+          right: 5,
+          width: 14,
+          height: 14,
+          borderRadius: "50%",
+          background: "#cbd5e1",
+          border: "none",
+          cursor: "pointer",
+          fontSize: 9,
+          color: "#64748b",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          lineHeight: 1,
+          padding: 0
+        }
+      },
+      "\xD7"
+    ));
+  })), /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      onClick: addNextMonth,
+      title: "\u7FCC\u6708\u3092\u8FFD\u52A0",
+      style: {
+        flexShrink: 0,
+        height: 36,
+        padding: "0 10px",
+        background: "#d1d9e6",
+        border: "1px solid #c5cdd8",
+        borderBottom: "2px solid #cbd5e1",
+        borderLeft: "none",
+        cursor: "pointer",
+        fontSize: 11,
+        color: "#64748b",
+        fontFamily: "inherit",
+        whiteSpace: "nowrap",
+        borderRadius: "0 6px 0 0",
+        display: "flex",
+        alignItems: "center",
+        gap: 4,
+        alignSelf: "flex-end",
+        marginBottom: 0
+      }
+    },
+    "\u2192\uFF0B"
+  )), /* @__PURE__ */ React.createElement("div", { style: { background: "#fff", borderBottom: "1px solid #e2e8f0", padding: "7px 20px", display: "flex", gap: 14, flexWrap: "wrap", alignItems: "center" } }, LEAVE_TYPES.map((t) => /* @__PURE__ */ React.createElement("div", { key: t.code, style: { display: "flex", alignItems: "center", gap: 5, fontSize: 11 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 21, height: 21, borderRadius: 4, background: t.bg, border: `1.5px solid ${t.border}`, color: t.color, fontSize: 11, fontWeight: 700 } }, t.code), /* @__PURE__ */ React.createElement("span", { style: { color: "#64748b" } }, t.label))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 5, fontSize: 11 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "inline-block", width: 21, height: 21, borderRadius: 4, background: "repeating-linear-gradient(135deg,#f8fafc 0,#f8fafc 3px,#dde3ec 3px,#dde3ec 4px)", border: "1px solid #e2e8f0" } }), /* @__PURE__ */ React.createElement("span", { style: { color: "#94a3b8" } }, "\u4F11\u696D\u65E5")), /* @__PURE__ */ React.createElement("span", { style: { marginLeft: "auto", fontSize: 10, color: "#cbd5e1" } }, "\u30AF\u30EA\u30C3\u30AF\u3067\u533A\u5206\u5165\u529B\u30FB\u7E70\u308A\u8FD4\u3057\u3067\u5909\u66F4\u30FB\u3082\u3046\u4E00\u5468\u3067\u524A\u9664")), /* @__PURE__ */ React.createElement("div", { style: { overflowX: "auto", padding: "12px 16px 40px" } }, /* @__PURE__ */ React.createElement("table", { style: { borderCollapse: "collapse", background: "#fff", borderRadius: 10, overflow: "hidden", boxShadow: "0 1px 6px #0001", fontSize: 11, width: "max-content", border: "1px solid #e2e8f0" } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: "#f8fafc", borderBottom: "2px solid #e2e8f0" } }, /* @__PURE__ */ React.createElement("th", { style: { ...TH, position: "sticky", left: 0, zIndex: 12, background: "#f8fafc", minWidth: 100, textAlign: "left", paddingLeft: 14, borderRight: "2px solid #e2e8f0" } }, "\u6C0F\u540D"), /* @__PURE__ */ React.createElement("th", { style: { ...TH, minWidth: 60, borderRight: "2px solid #e2e8f0" } }, "\u6B8B\u65E5\u6570"), days.map((d, i) => {
+    const dow = getDow(d.year, d.month, d.day);
+    const closed = isClosedDay(d.year, d.month, d.day);
+    const isSun = dow === 0, isHol = isHoliday(d.year, d.month, d.day) || isNewYear(d.year, d.month, d.day), isWed = dow === 3;
+    const isFirst = d.day === 16 || d.day === 1;
+    return /* @__PURE__ */ React.createElement("th", { key: i, style: {
+      ...TH,
+      width: 28,
+      minWidth: 28,
+      paddingLeft: 1,
+      paddingRight: 1,
+      color: closed ? "#c8d2e0" : isSun || isHol ? "#ef4444" : isWed ? "#3b82f6" : "#64748b",
+      background: closed ? "#f4f6f9" : "#f8fafc",
+      borderLeft: isFirst ? "1px solid #cbd5e1" : "none"
+    } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, fontSize: 11, lineHeight: 1.3 } }, d.day), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 9, fontWeight: 400 } }, DOW[dow]));
+  }))), /* @__PURE__ */ React.createElement("tbody", null, employees.map((emp, ri) => {
+    const rem = remain(emp);
+    const rowBg = ri % 2 === 0 ? "#fff" : "#f9fbfd";
+    return /* @__PURE__ */ React.createElement("tr", { key: emp.id, style: { borderBottom: "1px solid #f1f5f9" } }, /* @__PURE__ */ React.createElement("td", { style: { position: "sticky", left: 0, zIndex: 10, background: emp.onLeave ? "#fdf4ff" : rowBg, padding: "5px 14px", whiteSpace: "nowrap", borderRight: "2px solid #e2e8f0" } }, /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: () => setDetail(emp.id),
+        style: { background: "none", border: "none", color: emp.onLeave ? "#9333ea" : "#2563eb", cursor: "pointer", fontSize: 12, fontWeight: 600, padding: 0, fontFamily: "inherit", display: "flex", alignItems: "center", gap: 5 }
+      },
+      emp.name,
+      emp.onLeave && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 10, background: "#f3e8ff", color: "#9333ea", border: "1px solid #d8b4fe", borderRadius: 4, padding: "1px 5px", fontWeight: 700, lineHeight: 1.4 } }, "\u80B2\u4F11")
+    )), /* @__PURE__ */ React.createElement("td", { style: {
+      ...TD,
+      textAlign: "center",
+      background: rowBg,
+      fontWeight: 700,
+      fontSize: 13,
+      borderRight: "2px solid #e2e8f0",
+      color: rem <= 3 ? "#dc2626" : rem <= 7 ? "#d97706" : "#16a34a"
+    } }, rem % 1 === 0 ? rem : rem.toFixed(1), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 9, fontWeight: 400, color: "#94a3b8", marginLeft: 1 } }, "\u65E5")), days.map((d, i) => {
+      const closed = isClosedDay(d.year, d.month, d.day);
+      const k = rk(emp.id, d), code = records[k];
+      const type = LEAVE_TYPES.find((t) => t.code === code);
+      const isFirst = d.day === 16 || d.day === 1;
+      const cellDate = new Date(d.year, d.month - 1, d.day);
+      const inMatLeave = emp.onLeave && ((!emp.leaveStart || cellDate >= new Date(emp.leaveStart)) && (!emp.leaveEnd || cellDate <= new Date(emp.leaveEnd)));
+      let bg = rowBg;
+      if (inMatLeave) bg = "repeating-linear-gradient(135deg,#f3e8ff 0,#f3e8ff 4px,#e9d5ff 4px,#e9d5ff 5px)";
+      else if (closed) bg = "repeating-linear-gradient(135deg,#f4f6f9 0,#f4f6f9 3px,#dde5ee 3px,#dde5ee 4px)";
+      else if (type) bg = type.bg;
+      return /* @__PURE__ */ React.createElement(
+        "td",
+        {
+          key: i,
+          onClick: () => !inMatLeave && toggleCell(emp.id, d),
+          style: {
+            textAlign: "center",
+            padding: 2,
+            cursor: closed || inMatLeave ? "default" : "pointer",
+            background: bg,
+            userSelect: "none",
+            transition: "background 0.1s",
+            borderLeft: isFirst ? "1px solid #e2e8f0" : "none"
+          }
+        },
+        inMatLeave && !closed && i === 0 && /* @__PURE__ */ React.createElement("span", { style: { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 4, background: "#ede9fe", border: "1.5px solid #c4b5fd", color: "#7c3aed", fontSize: 9, fontWeight: 700 } }, "\u80B2"),
+        !inMatLeave && type && !closed && /* @__PURE__ */ React.createElement("span", { style: { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 4, background: type.bg, border: `1.5px solid ${type.border}`, color: type.color, fontSize: 10, fontWeight: 700 } }, type.code)
+      );
+    }));
+  })))), detail && detailEmp && (() => {
+    const batches = calcBatches(detailEmp.joinDate, TODAY);
+    const validBatches = batches.filter((b) => b.expiresAt > TODAY);
+    const expiredBatches = batches.filter((b) => b.expiresAt <= TODAY);
+    const validTotal = validBatches.reduce((s, b) => s + b.days, 0);
+    const used = totalUsed(detailEmp.id);
+    const rem = remain(detailEmp);
+    const { nextGrant, nextExpiry } = calcNextEvents(detailEmp.joinDate, TODAY);
+    return /* @__PURE__ */ React.createElement("div", { style: { position: "fixed", inset: 0, background: "#00000044", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center" }, onClick: () => setDetail(null) }, /* @__PURE__ */ React.createElement("div", { style: { background: "#fff", borderRadius: 16, padding: 28, width: "90%", maxWidth: 500, maxHeight: "88vh", overflowY: "auto", boxShadow: "0 20px 60px #0002" }, onClick: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 18, fontWeight: 700, display: "flex", alignItems: "center", gap: 8 } }, detailEmp.name, detailEmp.onLeave && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, background: "#f3e8ff", color: "#9333ea", border: "1px solid #d8b4fe", borderRadius: 6, padding: "2px 8px", fontWeight: 700 } }, "\u{1F931} \u80B2\u4F11\u4E2D")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: "#94a3b8", marginTop: 3 } }, "\u52E4\u52D9\u958B\u59CB ", detailEmp.joinDate)), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8 } }, /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: () => setConfirmDialog({ name: detailEmp.name, id: detailEmp.id }),
+        style: { background: "#fee2e2", border: "1px solid #fca5a5", color: "#dc2626", fontSize: 11, fontWeight: 600, cursor: "pointer", borderRadius: 7, padding: "6px 12px", whiteSpace: "nowrap" }
+      },
+      "\u{1F5D1} \u9000\u8077\u30FB\u524A\u9664"
+    ), /* @__PURE__ */ React.createElement("button", { onClick: () => setDetail(null), style: { background: "#f1f5f9", border: "none", color: "#64748b", fontSize: 14, cursor: "pointer", borderRadius: 8, width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center" } }, "\u2715"))), detailEmp.onLeave ? /* @__PURE__ */ React.createElement("div", { style: { background: "#faf5ff", border: "1.5px solid #d8b4fe", borderRadius: 10, padding: "14px 16px", marginBottom: 20 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, fontWeight: 700, color: "#7c3aed" } }, "\u{1F931} \u80B2\u4F11\u671F\u9593"), /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: () => setOnLeave(detailEmp.id, false, "", ""),
+        style: { background: "none", border: "1px solid #d8b4fe", color: "#9333ea", fontSize: 11, cursor: "pointer", borderRadius: 5, padding: "3px 10px", fontFamily: "inherit" }
+      },
+      "\u80B2\u4F11\u3092\u89E3\u9664"
+    )), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { style: { fontSize: 10, color: "#9333ea", display: "block", marginBottom: 4, fontWeight: 600 } }, "\u958B\u59CB\u65E5"), /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        type: "date",
+        value: detailEmp.leaveStart,
+        onChange: (e) => setOnLeave(detailEmp.id, true, e.target.value, detailEmp.leaveEnd),
+        style: { width: "100%", background: "#fff", border: "1px solid #d8b4fe", borderRadius: 6, padding: "6px 8px", fontSize: 12, color: "#1e293b", boxSizing: "border-box", fontFamily: "inherit" }
+      }
+    )), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { style: { fontSize: 10, color: "#9333ea", display: "block", marginBottom: 4, fontWeight: 600 } }, "\u7D42\u4E86\u65E5\uFF08\u4E88\u5B9A\uFF09"), /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        type: "date",
+        value: detailEmp.leaveEnd,
+        onChange: (e) => setOnLeave(detailEmp.id, true, detailEmp.leaveStart, e.target.value),
+        style: { width: "100%", background: "#fff", border: "1px solid #d8b4fe", borderRadius: 6, padding: "6px 8px", fontSize: 12, color: "#1e293b", boxSizing: "border-box", fontFamily: "inherit" }
+      }
+    ))), (detailEmp.leaveStart || detailEmp.leaveEnd) && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10, fontSize: 11, color: "#7c3aed", background: "#ede9fe", borderRadius: 6, padding: "6px 10px" } }, detailEmp.leaveStart ? detailEmp.leaveStart.replace(/-/g, "/") : "\u958B\u59CB\u65E5\u672A\u8A2D\u5B9A", "\u301C", detailEmp.leaveEnd ? detailEmp.leaveEnd.replace(/-/g, "/") : "\u7D42\u4E86\u65E5\u672A\u8A2D\u5B9A")) : /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 16 } }, /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: () => setOnLeave(detailEmp.id, true, "", ""),
+        style: { background: "#faf5ff", border: "1px solid #e9d5ff", color: "#9333ea", fontSize: 11, fontWeight: 600, cursor: "pointer", borderRadius: 6, padding: "6px 14px", fontFamily: "inherit" }
+      },
+      "\uFF0B \u80B2\u4F11\u4E2D\u306B\u3059\u308B"
+    )), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 18 } }, /* @__PURE__ */ React.createElement("div", { style: { background: "#f8fafc", border: "1.5px solid #e2e8f0", borderRadius: 10, padding: "14px 8px", textAlign: "center" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 22, fontWeight: 700, color: "#475569" } }, validTotal + (detailEmp.adjustDays || 0)), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10, color: "#94a3b8", marginTop: 4 } }, "\u6709\u52B9\u4ED8\u4E0E\u65E5\u6570"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "center", gap: 4, marginTop: 8 } }, /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: () => setEmployees((p) => p.map((e) => e.id === detailEmp.id ? { ...e, adjustDays: (e.adjustDays || 0) - 1 } : e)),
+        style: { width: 22, height: 22, borderRadius: 5, border: "1px solid #e2e8f0", background: "#fff", cursor: "pointer", fontSize: 14, color: "#64748b", display: "flex", alignItems: "center", justifyContent: "center", padding: 0, lineHeight: 1 }
+      },
+      "\u2212"
+    ), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 10, color: (detailEmp.adjustDays || 0) > 0 ? "#16a34a" : (detailEmp.adjustDays || 0) < 0 ? "#dc2626" : "#cbd5e1", fontWeight: 600, minWidth: 36, textAlign: "center" } }, (detailEmp.adjustDays || 0) > 0 ? `+${detailEmp.adjustDays}` : (detailEmp.adjustDays || 0) < 0 ? detailEmp.adjustDays : "\u8ABF\u6574\u306A\u3057"), /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: () => setEmployees((p) => p.map((e) => e.id === detailEmp.id ? { ...e, adjustDays: (e.adjustDays || 0) + 1 } : e)),
+        style: { width: 22, height: 22, borderRadius: 5, border: "1px solid #e2e8f0", background: "#fff", cursor: "pointer", fontSize: 14, color: "#64748b", display: "flex", alignItems: "center", justifyContent: "center", padding: 0, lineHeight: 1 }
+      },
+      "\uFF0B"
+    )), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 9, color: "#cbd5e1", marginTop: 4 } }, "\u81EA\u52D5\u8A08\u7B97 ", validTotal, "\u65E5 \xB1 \u8ABF\u6574")), /* @__PURE__ */ React.createElement("div", { style: { background: "#fffbeb", border: "1.5px solid #fde68a", borderRadius: 10, padding: "14px 8px", textAlign: "center" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 22, fontWeight: 700, color: "#d97706" } }, used % 1 === 0 ? used : used.toFixed(1)), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10, color: "#94a3b8", marginTop: 4 } }, "\u6D88\u5316\u65E5\u6570")), /* @__PURE__ */ React.createElement("div", { style: { background: rem <= 3 ? "#fee2e2" : rem <= 7 ? "#fffbeb" : "#f0fdf4", border: `1.5px solid ${rem <= 3 ? "#fca5a5" : rem <= 7 ? "#fde68a" : "#86efac"}`, borderRadius: 10, padding: "14px 8px", textAlign: "center" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 22, fontWeight: 700, color: rem <= 3 ? "#dc2626" : rem <= 7 ? "#d97706" : "#16a34a" } }, rem % 1 === 0 ? rem : rem.toFixed(1)), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10, color: "#94a3b8", marginTop: 4 } }, "\u6B8B\u65E5\u6570"))), /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 20 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 11, color: "#94a3b8", marginBottom: 5 } }, /* @__PURE__ */ React.createElement("span", null, "\u6709\u7D66\u6D88\u5316\u7387"), /* @__PURE__ */ React.createElement("span", null, validTotal > 0 ? Math.round(used / validTotal * 100) : 0, "%")), /* @__PURE__ */ React.createElement("div", { style: { height: 7, background: "#f1f5f9", borderRadius: 4, overflow: "hidden" } }, /* @__PURE__ */ React.createElement("div", { style: { height: "100%", width: `${validTotal > 0 ? Math.min(100, used / validTotal * 100) : 0}%`, background: "linear-gradient(90deg,#16a34a,#d97706)", borderRadius: 4, transition: "width 0.5s" } }))), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 20 } }, nextGrant && /* @__PURE__ */ React.createElement("div", { style: { background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 8, padding: "10px 14px" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10, color: "#16a34a", fontWeight: 600, marginBottom: 4 } }, "\u{1F4C5} \u6B21\u56DE\u4ED8\u4E0E"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: "#15803d" } }, fmtDate(nextGrant.date)), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: "#4ade80", marginTop: 2 } }, "+", nextGrant.days, "\u65E5")), nextExpiry && /* @__PURE__ */ React.createElement("div", { style: { background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8, padding: "10px 14px" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10, color: "#d97706", fontWeight: 600, marginBottom: 4 } }, "\u23F0 \u6B21\u56DE\u6642\u52B9"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: "#b45309" } }, fmtDate(nextExpiry.date)), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: "#fbbf24", marginTop: 2 } }, nextExpiry.days, "\u65E5\u304C\u6D88\u6EC5"))), /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 20 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: "#94a3b8", marginBottom: 8, fontWeight: 600 } }, "\u4ED8\u4E0E\u5C65\u6B74"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 4 } }, batches.slice().reverse().map((b, i) => {
+      const expired = b.expiresAt <= TODAY;
+      return /* @__PURE__ */ React.createElement("div", { key: i, style: { display: "flex", alignItems: "center", gap: 10, padding: "7px 12px", borderRadius: 7, background: expired ? "#f8fafc" : "#f0fdf4", border: `1px solid ${expired ? "#e2e8f0" : "#bbf7d0"}`, opacity: expired ? 0.55 : 1 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 10, color: expired ? "#94a3b8" : "#16a34a", fontWeight: 600, minWidth: 70 } }, fmtDate(b.grantedAt)), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, fontWeight: 700, color: expired ? "#94a3b8" : "#15803d", minWidth: 36 } }, "+", b.days, "\u65E5"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 10, color: "#94a3b8", flex: 1 } }, "\u6642\u52B9 ", fmtDate(b.expiresAt)), expired && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 9, background: "#e2e8f0", color: "#94a3b8", borderRadius: 4, padding: "2px 6px" } }, "\u6642\u52B9\u6D88\u6EC5"));
+    }))), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: "#94a3b8", marginBottom: 8, fontWeight: 600 } }, "\u533A\u5206\u5225\u96C6\u8A08\uFF08\u5168\u671F\u9593\uFF09"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 8 } }, LEAVE_TYPES.map((t) => {
+      const cnt = countCode(detailEmp.id, t.code);
+      return /* @__PURE__ */ React.createElement("div", { key: t.code, style: { background: t.bg, border: `1.5px solid ${t.border}`, borderRadius: 8, padding: "8px 12px", display: "flex", alignItems: "center", gap: 7 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 20, height: 20, border: `1.5px solid ${t.border}`, borderRadius: 4, color: t.color, fontSize: 10, fontWeight: 700, background: t.bg } }, t.code), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, color: "#475569", fontWeight: 500 } }, t.label), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, fontWeight: 700, color: t.color } }, t.days === 0.5 ? `${cnt}\u56DE(${(cnt * 0.5).toFixed(1)}\u65E5)` : `${cnt}\u56DE`));
+    }))));
+  })(), confirmDialog && /* @__PURE__ */ React.createElement(
+    "div",
+    {
+      style: { position: "fixed", inset: 0, background: "#00000066", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" },
+      onClick: () => setConfirmDialog(null)
+    },
+    /* @__PURE__ */ React.createElement(
+      "div",
+      {
+        style: { background: "#fff", borderRadius: 16, padding: 32, width: "88%", maxWidth: 380, boxShadow: "0 20px 60px #0003", textAlign: "center" },
+        onClick: (e) => e.stopPropagation()
+      },
+      /* @__PURE__ */ React.createElement("div", { style: { fontSize: 40, marginBottom: 12 } }, "\u{1F5D1}\uFE0F"),
+      /* @__PURE__ */ React.createElement("div", { style: { fontSize: 16, fontWeight: 700, color: "#1e293b", marginBottom: 8 } }, "\u672C\u5F53\u306B\u6D88\u3057\u307E\u3059\u304B\uFF1F\uFF01"),
+      /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: "#64748b", marginBottom: 6 } }, /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 700, color: "#dc2626" } }, "\u300C", confirmDialog.name, "\u300D"), " \u3092\u524A\u9664\u3057\u307E\u3059"),
+      /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: "#94a3b8", background: "#fee2e2", borderRadius: 8, padding: "8px 12px", marginBottom: 24 } }, "\u26A0\uFE0F \u3053\u306E\u64CD\u4F5C\u306F\u53D6\u308A\u6D88\u305B\u307E\u305B\u3093\u3002", /* @__PURE__ */ React.createElement("br", null), "\u8A18\u9332\u30C7\u30FC\u30BF\u3082\u3059\u3079\u3066\u6D88\u53BB\u3055\u308C\u307E\u3059\u3002"),
+      /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 10 } }, /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          onClick: () => setConfirmDialog(null),
+          style: { flex: 1, background: "#f1f5f9", border: "1.5px solid #e2e8f0", color: "#475569", padding: "11px", borderRadius: 9, cursor: "pointer", fontSize: 13, fontWeight: 600, fontFamily: "inherit" }
+        },
+        "\u3084\u3081\u3066\u304A\u304F"
+      ), /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          onClick: () => {
+            deleteEmployee(confirmDialog.id);
+            setConfirmDialog(null);
+          },
+          style: { flex: 1, background: "#dc2626", border: "none", color: "#fff", padding: "11px", borderRadius: 9, cursor: "pointer", fontSize: 13, fontWeight: 700, fontFamily: "inherit", boxShadow: "0 2px 8px #dc262644" }
+        },
+        "\u524A\u9664\u3059\u308B"
+      ))
+    )
+  ), addOpen && /* @__PURE__ */ React.createElement("div", { style: { position: "fixed", inset: 0, background: "#00000044", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center" }, onClick: () => setAddOpen(false) }, /* @__PURE__ */ React.createElement("div", { style: { background: "#fff", borderRadius: 16, padding: 28, width: 340, boxShadow: "0 20px 60px #0002" }, onClick: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15, fontWeight: 700, marginBottom: 18 } }, "\u793E\u54E1\u3092\u8FFD\u52A0"), /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 12 } }, /* @__PURE__ */ React.createElement("label", { style: { fontSize: 11, color: "#64748b", display: "block", marginBottom: 4, fontWeight: 500 } }, "\u6C0F\u540D"), /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      type: "text",
+      value: newEmp.name,
+      placeholder: "\u4F8B\uFF1A\u5C71\u7530 \u592A\u90CE",
+      onChange: (e) => setNewEmp((p) => ({ ...p, name: e.target.value })),
+      style: { width: "100%", background: "#f8fafc", border: "1.5px solid #e2e8f0", borderRadius: 7, padding: "8px 11px", color: "#1e293b", fontSize: 13, boxSizing: "border-box", fontFamily: "inherit" }
+    }
+  )), /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 12 } }, /* @__PURE__ */ React.createElement("label", { style: { fontSize: 11, color: "#64748b", display: "block", marginBottom: 4, fontWeight: 500 } }, "\u52E4\u52D9\u958B\u59CB\u65E5"), /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      type: "date",
+      value: newEmp.joinDate,
+      onChange: (e) => setNewEmp((p) => ({ ...p, joinDate: e.target.value })),
+      style: { width: "100%", background: "#f8fafc", border: "1.5px solid #e2e8f0", borderRadius: 7, padding: "8px 11px", color: "#1e293b", fontSize: 13, boxSizing: "border-box", fontFamily: "inherit" }
+    }
+  )), /* @__PURE__ */ React.createElement("div", { style: { background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 8, padding: "10px 12px", fontSize: 11, color: "#15803d", marginBottom: 16 } }, "\u4ED8\u4E0E\u65E5\u6570\u306F\u52E4\u52D9\u958B\u59CB\u65E5\u304B\u3089\u81EA\u52D5\u8A08\u7B97\u30FB2\u5E74\u6642\u52B9\u3082\u81EA\u52D5\u7BA1\u7406\u3055\u308C\u307E\u3059"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8 } }, /* @__PURE__ */ React.createElement("button", { onClick: () => setAddOpen(false), style: { flex: 1, background: "#f1f5f9", border: "1px solid #e2e8f0", color: "#64748b", padding: "9px", borderRadius: 7, cursor: "pointer", fontSize: 12 } }, "\u30AD\u30E3\u30F3\u30BB\u30EB"), /* @__PURE__ */ React.createElement("button", { onClick: addEmployee, style: { flex: 1, background: "#2563eb", border: "none", color: "#fff", padding: "9px", borderRadius: 7, cursor: "pointer", fontSize: 12, fontWeight: 700 } }, "\u8FFD\u52A0\u3059\u308B")))));
+}
+const TH = { padding: "8px 3px", fontWeight: 600, color: "#94a3b8", borderRight: "1px solid #f1f5f9", textAlign: "center", whiteSpace: "nowrap" };
+const TD = { padding: "4px 6px", borderRight: "1px solid #f1f5f9" };
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(React.createElement(App));
+
+  </script>
+</body>
+</html>
